@@ -1,0 +1,52 @@
+services:
+  payout-service:
+    build: .
+    ports:
+      - "3007:3007"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/payout_service
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN}
+      RAZORPAYX_KEY_ID: ${RAZORPAYX_KEY_ID}
+      RAZORPAYX_KEY_SECRET: ${RAZORPAYX_KEY_SECRET}
+      ESCROW_HOLD_DAYS: 3
+      DEFAULT_COMMISSION_RATE: 0.12
+      DEFAULT_PAYMENT_FEE_RATE: 0.02
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payout_service
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg_payout:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5674:5672"
+      - "15674:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pg_payout:

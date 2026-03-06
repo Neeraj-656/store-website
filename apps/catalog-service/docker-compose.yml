@@ -1,0 +1,30 @@
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: catalog_db
+    ports:
+      - "5432:5432"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management UI port
+  catalog:
+    build: 
+      context: . # Looks for the Dockerfile in the current directory
+    ports:
+      - "3001:3001" # HostPort:ContainerPort (Change 3001 if your app uses a different port)
+    environment:
+      # ⚠️ CRITICAL: Notice we use 'postgres' and 'rabbitmq' as the hostnames, NOT 'localhost'
+      - DATABASE_URL=postgresql://user:password@postgres:5432/catalog_db?schema=public
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672
+      - PORT=3001
+      # Add any other required env vars here (like JWT_PUBLIC_KEY)
+    depends_on:
+      - postgres
+      - rabbitmq

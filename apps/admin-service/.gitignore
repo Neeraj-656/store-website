@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+
+# Never commit real secrets — commit .env.example instead
+.env
+.env.*
+!.env.example
+
+# Prisma client generated output (regenerated via prisma generate)
+prisma/generated/

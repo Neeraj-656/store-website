@@ -1,0 +1,16 @@
+node_modules
+
+# Environment variables — never commit real credentials
+.env
+
+# FIX #9: The generated Prisma client (including platform-specific .dll.node binaries)
+# must NOT be committed to the repository. It will not work across platforms (Windows
+# binary checked in here will fail on Linux/macOS CI and production containers).
+# Run `prisma generate` as part of your Dockerfile build step instead.
+src/src/generated/
+src/generated/
+generated/
+
+# Local uploads / temp files
+uploads/
+*.log

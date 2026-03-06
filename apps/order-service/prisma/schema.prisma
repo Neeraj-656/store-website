@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  PENDING
+  CHECKOUT_INITIATED   // saga in-flight — inventory reserved, awaiting payment
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model Order {
+  id                     String        @id @default(uuid())
+  /// Client-supplied idempotency key — prevents duplicate orders on retry
+  orderReference         String        @unique
+  customerId             String
+  status                 OrderStatus   @default(PENDING)
+  /// All money in integer cents to avoid floating-point errors (1099 = $10.99)
+  totalCents             Int
+  paymentReference       String?
+  inventoryReservationId String?
+  notes                  String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+  outboxEvents  OutboxEvent[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model OrderItem {
+  id            String   @id @default(uuid())
+  orderId       String
+  productId     String
+  productName   String
+  quantity      Int
+  /// Unit price locked at time of order — in cents
+  unitCents     Int
+  subtotalCents Int
+  createdAt     DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+model OrderStatusHistory {
+  id          String   @id @default(uuid())
+  orderId     String
+  fromStatus  String?
+  toStatus    String
+  reason      String?
+  triggeredBy String   @default("system")
+  createdAt   DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+/// Outbox pattern: events written atomically with DB changes.
+/// The outbox processor polls with SELECT FOR UPDATE SKIP LOCKED
+/// so only one pod processes a batch at a time (no duplicate publishes).
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  orderId     String?
+  routingKey  String
+  payload     Json
+  published   Boolean   @default(false)
+  publishedAt DateTime?
+  /// Set when retries reaches MAX_OUTBOX_RETRIES. Used by the alert sweep to
+  /// surface permanently stuck events to on-call engineers.
+  failedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  retries     Int       @default(0)
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([published, createdAt])
+}

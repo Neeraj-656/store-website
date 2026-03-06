@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+
+# Never commit real secrets — commit .env.example instead
+.env
+.env.*
+!.env.example

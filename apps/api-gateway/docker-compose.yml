@@ -1,0 +1,134 @@
+version: '3.9'
+
+# ─── Shared network ──────────────────────────────────────────────────────────
+networks:
+  backend:
+    driver: bridge
+
+services:
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  api-gateway:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      AUTH_SERVICE_URL:      http://auth-service:3000
+      CATALOG_SERVICE_URL:   http://catalog-service:3001
+      ORDER_SERVICE_URL:     http://order-service:3002
+      PAYMENT_SERVICE_URL:   http://payment-service:3004
+      REVIEW_SERVICE_URL:    http://review-service:3005
+      INVENTORY_SERVICE_URL: http://inventory-service:3006
+      VENDOR_SERVICE_URL:    http://vendor-service:3007
+      PAYOUT_SERVICE_URL:    http://payout-service:3008
+      ADMIN_SERVICE_URL:     http://admin-service:3009
+    depends_on:
+      - auth-service
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout:  5s
+      retries:  3
+
+  # ── Auth Service ─────────────────────────────────────────────────────────────
+  auth-service:
+    build: ../authService
+    env_file: ../authService/.env
+    expose: ["3000"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Catalog Service ───────────────────────────────────────────────────────────
+  catalog-service:
+    build: ../catalogService
+    env_file: ../catalogService/.env
+    expose: ["3001"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Order Service ─────────────────────────────────────────────────────────────
+  order-service:
+    build: ../orderService
+    env_file: ../orderService/.env
+    expose: ["3002"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Payment Service ───────────────────────────────────────────────────────────
+  payment-service:
+    build:
+      context: ../paymentService
+      dockerfile: dockerfile
+    env_file: ../paymentService/.env
+    expose: ["3004"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Review Service ────────────────────────────────────────────────────────────
+  review-service:
+    build: ../reviewService
+    env_file: ../reviewService/src/.env
+    expose: ["3005"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Inventory Service ─────────────────────────────────────────────────────────
+  inventory-service:
+    build: ../inventoryService
+    env_file: ../inventoryService/.env
+    environment:
+      PORT: 3006   # overrides .env to avoid port conflict with review-service
+    expose: ["3006"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Vendor Service ────────────────────────────────────────────────────────────
+  vendor-service:
+    build: ../vendor-service
+    env_file: ../vendor-service/.env
+    environment:
+      PORT: 3007   # overrides .env to deduplicate from payout-service
+    expose: ["3007"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Payout Service ────────────────────────────────────────────────────────────
+  payout-service:
+    build: ../payoutService
+    env_file: ../payoutService/.env
+    environment:
+      PORT: 3008
+    expose: ["3008"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Admin Service ─────────────────────────────────────────────────────────────
+  admin-service:
+    build: ../adminService
+    env_file: ../adminService/.env
+    environment:
+      PORT: 3009
+    expose: ["3009"]
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # ── Notification Service (worker only — no HTTP) ──────────────────────────────
+  notification-service:
+    build: ../notification-service
+    env_file: ../notification-service/.env
+    networks:
+      - backend
+    restart: unless-stopped

@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum LedgerEntryType {
+  CREDIT          // earnings credited after delivery
+  COMMISSION_FEE  // platform commission deducted
+  PAYMENT_FEE     // payment gateway fee deducted
+  REFUND_DEBIT    // clawed back on refund
+  PAYOUT          // withdrawn to bank
+  ADJUSTMENT      // manual admin correction
+}
+
+enum EscrowStatus {
+  HELD            // funds waiting for release conditions
+  RELEASED        // conditions met, funds moved to available balance
+  REFUNDED        // order refunded, funds returned to platform
+}
+
+enum PayoutStatus {
+  PENDING         // payout record created, not yet initiated
+  PROCESSING      // transfer initiated with bank/provider
+  SUCCESS         // confirmed credited to vendor bank account
+  FAILED          // transfer rejected or bounced
+  CANCELLED       // cancelled before processing
+}
+
+enum SettlementCycle {
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  MANUAL
+}
+
+// ─── Vendor Wallet ──────────────────────────────────────────────────────────
+// One per vendor. Tracks available (settled) and pending (in escrow) balances.
+// All amounts in paise (₹1 = 100 paise) to avoid floating-point issues.
+
+model VendorWallet {
+  id               String   @id @default(uuid())
+  vendorId         String   @unique
+
+  availableBalance Int      @default(0)  // ready for payout
+  pendingBalance   Int      @default(0)  // locked in escrow
+  lifetimeEarnings Int      @default(0)  // total ever credited (audit)
+  totalPayouts     Int      @default(0)  // total ever paid out
+
+  ledgerEntries    LedgerEntry[]
+  escrowHolds      EscrowHold[]
+  payouts          Payout[]
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([vendorId])
+}
+
+// ─── Commission Rule ─────────────────────────────────────────────────────────
+// Platform-level commission config. Can be overridden per vendor.
+
+model CommissionRule {
+  id              String   @id @default(uuid())
+  vendorId        String?  @unique  // null = default rule; non-null = vendor override
+  commissionRate  Decimal  @db.Decimal(5, 4)  // e.g. 0.1200 = 12%
+  paymentFeeRate  Decimal  @db.Decimal(5, 4)  // e.g. 0.0200 = 2% (Razorpay fee pass-through)
+  settlementCycle SettlementCycle @default(WEEKLY)
+  isActive        Boolean  @default(true)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([vendorId])
+  @@index([isActive])
+}
+
+// ─── Escrow Hold ─────────────────────────────────────────────────────────────
+// When an order is delivered, vendor earnings are held in escrow until:
+// 1. Delivery is confirmed (already done at creation time)
+// 2. Return window expires (configurable, default 3 days)
+
+model EscrowHold {
+  id              String       @id @default(uuid())
+  vendorId        String
+  wallet          VendorWallet @relation(fields: [vendorId], references: [vendorId])
+
+  orderId         String       @unique  // one escrow hold per order
+  grossAmount     Int          // order item total for this vendor
+  commissionFee   Int          // deducted commission amount
+  paymentFee      Int          // deducted payment gateway fee
+  netAmount       Int          // amount to be released to vendor
+
+  status          EscrowStatus @default(HELD)
+  releaseAfter    DateTime     // earliest time funds can be released
+  releasedAt      DateTime?
+  refundedAt      DateTime?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([vendorId])
+  @@index([status, releaseAfter])
+  @@index([orderId])
+}
+
+// ─── Ledger Entry ────────────────────────────────────────────────────────────
+// Immutable double-entry-style audit trail. Every balance change writes here.
+
+model LedgerEntry {
+  id           String           @id @default(uuid())
+  vendorId     String
+  wallet       VendorWallet     @relation(fields: [vendorId], references: [vendorId])
+
+  type         LedgerEntryType
+  amount       Int              // always positive; sign is implied by type
+  balanceAfter Int              // snapshot of availableBalance after this entry
+  referenceId  String           // orderId, payoutId, escrowId, etc.
+  referenceType String          // 'ORDER' | 'PAYOUT' | 'ESCROW' | 'ADJUSTMENT'
+  description  String?
+
+  createdAt    DateTime         @default(now())
+
+  @@index([vendorId, createdAt])
+  @@index([referenceId])
+  @@index([type])
+}
+
+// ─── Payout ──────────────────────────────────────────────────────────────────
+// A disbursement from vendor available balance to their bank account.
+
+model Payout {
+  id               String       @id @default(uuid())
+  vendorId         String
+  wallet           VendorWallet @relation(fields: [vendorId], references: [vendorId])
+
+  amount           Int
+  currency         String       @default("INR")
+  status           PayoutStatus @default(PENDING)
+
+  // Bank account details (snapshot at time of payout)
+  bankAccountId    String       // vendor's registered bank account
+  ifscCode         String
+  accountNumber    String       // last 4 digits only for display
+
+  // Provider transfer details
+  razorpayPayoutId String?      @unique
+  utr              String?      // Unique Transaction Reference from bank
+  providerResponse Json?
+  failureReason    String?
+
+  initiatedAt      DateTime?
+  completedAt      DateTime?
+
+  outboxEvents     PayoutOutboxEvent[]
+  statusHistory    PayoutStatusHistory[]
+
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@index([vendorId])
+  @@index([status])
+}
+
+// ─── Payout Status History ───────────────────────────────────────────────────
+
+model PayoutStatusHistory {
+  id         String       @id @default(uuid())
+  payoutId   String
+  payout     Payout       @relation(fields: [payoutId], references: [id])
+
+  fromStatus PayoutStatus?
+  toStatus   PayoutStatus
+  reason     String?
+
+  createdAt  DateTime     @default(now())
+
+  @@index([payoutId])
+}
+
+// ─── Outbox Events ───────────────────────────────────────────────────────────
+// Same transactional outbox pattern as other services.
+
+model PayoutOutboxEvent {
+  id          String   @id @default(uuid())
+  payoutId    String
+  payout      Payout   @relation(fields: [payoutId], references: [id])
+
+  eventType   String
+  payload     Json
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([published])
+  @@index([payoutId])
+}

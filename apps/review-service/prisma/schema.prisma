@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ─────────────────────────────────────────────────────────────────
+
+enum ReviewStatus {
+  PENDING    // awaiting moderation (future use)
+  PUBLISHED
+  REJECTED   // flagged by moderation
+}
+
+// ─── Review ────────────────────────────────────────────────────────────────
+//
+// Business rules enforced at DB level:
+//   - @@unique([productId, userId])  → 1 review per product per customer
+//   - orderId stored for delivery verification (checked in service layer)
+
+model Review {
+  id        String       @id @default(uuid())
+
+  productId String                         // SKU from Catalog Service
+  userId    String                         // from JWT
+  orderId   String                         // from Order Service — proof of purchase
+
+  rating    Int                            // 1–5 stars
+  title     String?      @db.VarChar(120)
+  body      String?      @db.Text
+
+  status    ReviewStatus @default(PUBLISHED)
+
+  helpfulCount   Int     @default(0)       // users marking review as helpful
+  notHelpfulCount Int    @default(0)
+
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  helpfulVotes ReviewHelpfulVote[]
+
+  // One review per product per customer — enforced at DB level
+  @@unique([productId, userId])
+
+  @@index([productId])
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+}
+
+// ─── ReviewHelpfulVote ─────────────────────────────────────────────────────
+//
+// Tracks which users voted a review as helpful/not-helpful.
+// Prevents double-voting at DB level with @@unique([reviewId, userId]).
+
+model ReviewHelpfulVote {
+  id       String  @id @default(uuid())
+  reviewId String
+  review   Review  @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  userId   String
+  helpful  Boolean                        // true = helpful, false = not helpful
+
+  createdAt DateTime @default(now())
+
+  @@unique([reviewId, userId])
+  @@index([reviewId])
+}
+
+// ─── ProductRating ─────────────────────────────────────────────────────────
+//
+// Materialized aggregation — updated whenever a review is created/updated/deleted.
+// Allows O(1) rating lookups without scanning all reviews.
+// Kept in this service so it stays consistent with reviews.
+
+model ProductRating {
+  id           String @id @default(uuid())
+  productId    String @unique
+
+  averageRating Float  @default(0)
+  totalReviews  Int    @default(0)
+
+  // Breakdown by star count
+  oneStar      Int    @default(0)
+  twoStar      Int    @default(0)
+  threeStar    Int    @default(0)
+  fourStar     Int    @default(0)
+  fiveStar     Int    @default(0)
+
+  updatedAt    DateTime @updatedAt
+
+  @@index([productId])
+}
+
+// ─── DeliveredOrder ────────────────────────────────────────────────────────
+//
+// Local cache of delivered orders consumed from the Order Service via RabbitMQ.
+// Allows this service to verify "order was delivered" without calling
+// the Order Service synchronously — keeps services decoupled.
+
+model DeliveredOrder {
+  id        String   @id @default(uuid())
+  orderId   String   @unique
+  userId    String
+  productIds String[]               // array of SKUs in the order
+
+  deliveredAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([orderId])
+}
+
+// ─── ReviewOutboxEvent ─────────────────────────────────────────────────────
+//
+// Transactional outbox for RabbitMQ — guarantees at-least-once event delivery.
+
+model ReviewOutboxEvent {
+  id          String   @id @default(uuid())
+  reviewId    String?                        // null for aggregate events
+  eventType   String
+  payload     Json
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([published])
+}

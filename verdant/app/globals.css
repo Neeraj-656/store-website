@@ -1,0 +1,148 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Custom fonts via CDN ──────────────────────────────────────────── */
+@import url('https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&f[]=satoshi@300,400,500,700&display=swap');
+
+@layer base {
+  :root {
+    --background: 220 13% 9%;
+    --foreground: 60 5% 92%;
+    --card: 220 13% 12%;
+    --card-foreground: 60 5% 92%;
+    --popover: 220 13% 12%;
+    --popover-foreground: 60 5% 92%;
+    --primary: 142 40% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 13% 17%;
+    --secondary-foreground: 60 5% 80%;
+    --muted: 220 13% 17%;
+    --muted-foreground: 220 5% 50%;
+    --accent: 43 60% 55%;
+    --accent-foreground: 220 13% 9%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 18%;
+    --input: 220 13% 17%;
+    --ring: 142 40% 40%;
+    --radius: 0.75rem;
+  }
+
+  * { border-color: hsl(var(--border)); }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: 'Satoshi', system-ui, sans-serif;
+    line-height: 1.6;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Clash Display', system-ui, sans-serif;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+}
+
+@layer utilities {
+  /* ── Glass ──────────────────────────────────────────────────────── */
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+  }
+
+  /* ── Shimmer skeleton ───────────────────────────────────────────── */
+  .skeleton {
+    background: linear-gradient(90deg,
+      hsl(220 13% 15%) 0%,
+      hsl(220 13% 20%) 50%,
+      hsl(220 13% 15%) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.8s ease-in-out infinite;
+    border-radius: 8px;
+  }
+
+  /* ── Gradient text ──────────────────────────────────────────────── */
+  .gradient-text {
+    background: linear-gradient(135deg, #55a558 0%, #d4a843 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .gradient-text-green {
+    background: linear-gradient(135deg, #6da470 0%, #9bbf9d 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ── Scrollbar ──────────────────────────────────────────────────── */
+  .scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; height: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+
+  /* ── Glow effects ───────────────────────────────────────────────── */
+  .glow-green { box-shadow: 0 0 40px rgba(85, 165, 88, 0.2); }
+  .glow-gold { box-shadow: 0 0 40px rgba(212, 168, 67, 0.2); }
+
+  /* ── Noise texture ──────────────────────────────────────────────── */
+  .noise::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    border-radius: inherit;
+  }
+
+  /* ── Card hover lift ────────────────────────────────────────────── */
+  .card-hover {
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), 
+                box-shadow 0.3s ease,
+                border-color 0.3s ease;
+  }
+  .card-hover:hover {
+    transform: translateY(-4px);
+    border-color: rgba(85, 165, 88, 0.3);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(85, 165, 88, 0.1);
+  }
+
+  /* ── Hide scrollbar for sliders ─────────────────────────────────── */
+  .slider-container {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-snap-type: x mandatory;
+  }
+  .slider-container::-webkit-scrollbar { display: none; }
+  .slider-item { scroll-snap-align: start; }
+}
+
+/* ── Custom selection ──────────────────────────────────────────────── */
+::selection {
+  background: rgba(85, 165, 88, 0.3);
+  color: #fff;
+}

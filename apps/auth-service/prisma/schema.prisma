@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  customer
+  vendor
+  admin
+}
+
+enum AccountStatus {
+  PENDING_VERIFICATION  // just signed up, email not verified
+  ACTIVE                // fully verified and active
+  SUSPENDED             // suspended by admin
+  DEACTIVATED           // self-deactivated or permanently banned
+  LOCKED                // temporary lockout due to too many failed logins
+}
+
+enum OtpPurpose {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  PASSWORD_RESET
+  TWO_FACTOR
+}
+
+enum TokenFamily {
+  // Used to group refresh token chains — if an old token in a family is
+  // reused it means the token was stolen; invalidate the entire family.
+  DEFAULT
+}
+
+// ─── User ────────────────────────────────────────────────────────────────────
+// Core identity record. No business data lives here.
+// For vendor-specific data see Vendor Service.
+// For admin-specific data see Admin Service.
+
+model User {
+  id               String        @id @default(uuid())
+  email            String        @unique
+  phone            String?       @unique
+  passwordHash     String
+
+  role             UserRole      @default(customer)
+  status           AccountStatus @default(PENDING_VERIFICATION)
+
+  // Verification flags
+  isEmailVerified  Boolean       @default(false)
+  isPhoneVerified  Boolean       @default(false)
+
+  // Security
+  failedLoginCount Int           @default(0)
+  lockedUntil      DateTime?     // null = not locked
+  lastLoginAt      DateTime?
+  lastLoginIp      String?
+
+  // Password reset tracking
+  passwordChangedAt DateTime?
+
+  // Soft links — IDs are set after downstream services create their records
+  vendorId         String?       @unique  // set after vendor-service creates profile
+  adminId          String?       @unique  // set after admin-service creates record
+
+  refreshTokens    RefreshToken[]
+  otpCodes         OtpCode[]
+  loginAttempts    LoginAttempt[]
+  outboxEvents     AuthOutboxEvent[]
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@index([role])
+  @@index([status])
+}
+
+// ─── RefreshToken ────────────────────────────────────────────────────────────
+// Stored refresh tokens with rotation + family-based theft detection.
+// On each refresh: old token is revoked, new token issued in the same family.
+// If a revoked token is presented: entire family is invalidated (stolen token).
+
+model RefreshToken {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash   String    @unique  // SHA-256 hash — never store raw token
+  family      String             // UUID — group of tokens from one login session
+  isRevoked   Boolean   @default(false)
+  revokedAt   DateTime?
+  replacedBy  String?            // id of the next token in this family
+
+  userAgent   String?
+  ipAddress   String?
+  expiresAt   DateTime
+
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([family])
+  @@index([isRevoked])
+  @@index([expiresAt])
+}
+
+// ─── OtpCode ─────────────────────────────────────────────────────────────────
+// Short-lived one-time passwords for email/phone verification and password reset.
+// Hash stored — raw code is only ever sent to the user and never persisted.
+
+model OtpCode {
+  id          String     @id @default(uuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  codeHash    String               // bcrypt hash of the raw 6-digit code
+  purpose     OtpPurpose
+  recipient   String               // email or phone number it was sent to
+  isUsed      Boolean   @default(false)
+  attempts    Int       @default(0) // wrong guesses — lock after 5
+  expiresAt   DateTime
+
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+}
+
+// ─── LoginAttempt ────────────────────────────────────────────────────────────
+// Per-IP and per-account failed login tracking for brute-force detection.
+
+model LoginAttempt {
+  id         String   @id @default(uuid())
+  userId     String?  // null for attempts against non-existent emails
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  ipAddress  String
+  email      String            // the email that was attempted
+  success    Boolean
+  userAgent  String?
+  failReason String?           // 'BAD_PASSWORD' | 'ACCOUNT_LOCKED' | 'NOT_FOUND' etc.
+
+  createdAt  DateTime @default(now())
+
+  @@index([ipAddress, createdAt])
+  @@index([userId, createdAt])
+  @@index([email, createdAt])
+}
+
+// ─── AccessTokenDenylist ─────────────────────────────────────────────────────
+// Revoked access tokens (jti claim) stored until their natural expiry.
+// Checked on every authenticated request when strict invalidation is needed
+// (logout, password change, account suspension).
+// Entries are cleaned up by a worker after expiry.
+
+model AccessTokenDenylist {
+  jti       String   @id  // JWT ID — matches the jti claim in the token
+  userId    String
+  expiresAt DateTime     // sweep entries after this time
+  revokedAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+// ─── AuthOutboxEvent ─────────────────────────────────────────────────────────
+// Transactional outbox — events written atomically with state changes.
+
+model AuthOutboxEvent {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+
+  eventType   String
+  payload     Json
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([published])
+  @@index([userId])
+}

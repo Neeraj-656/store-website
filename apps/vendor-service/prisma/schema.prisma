@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ─────────────────────────────────────────────────────────────────
+
+enum VendorStatus {
+  PENDING_KYC       // Just registered, hasn't submitted documents yet
+  KYC_SUBMITTED     // Documents submitted, awaiting admin review
+  KYC_IN_REVIEW     // Admin has picked up the review
+  KYC_APPROVED      // Fully verified and active
+  KYC_REJECTED      // Rejected — can resubmit
+  SUSPENDED         // Suspended by admin (fraud/compliance)
+  BLACKLISTED       // Permanently banned
+}
+
+enum DocumentType {
+  PAN_CARD
+  BUSINESS_PAN
+  GST_CERTIFICATE
+  AADHAAR
+  BANK_STATEMENT
+  CANCELLED_CHEQUE
+  INCORPORATION_CERTIFICATE
+  ADDRESS_PROOF
+}
+
+enum DocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum KycEventType {
+  SUBMITTED
+  REVIEW_STARTED
+  APPROVED
+  REJECTED
+  RESUBMITTED
+  SUSPENDED
+  UNSUSPENDED
+  BLACKLISTED
+}
+
+// ─── Vendor ────────────────────────────────────────────────────────────────
+//
+// Core vendor identity. The `userId` is owned by the Auth Service.
+// Bank details are stored encrypted (AES-256-GCM) in bankDetailsEncrypted.
+
+model Vendor {
+  id          String       @id @default(uuid())
+  userId      String       @unique   // from Auth Service JWT
+
+  // Business identity
+  businessName     String
+  businessType     String            // SOLE_PROPRIETOR | PARTNERSHIP | PRIVATE_LIMITED | LLP
+  businessEmail    String
+
+  // Compliance identifiers — stored plaintext (not secrets, but indexed for dedup)
+  pan              String?           // Personal PAN (15 chars)
+  businessPan      String?           // Business PAN (10 chars)
+  gstin            String?           // GST Identification Number (15 chars)
+
+  // Bank details stored AES-256-GCM encrypted — never plaintext in DB
+  // Format of decrypted value: JSON { accountNumber, ifsc, accountName, bankName }
+  bankDetailsEncrypted  String?
+  bankDetailsIv         String?      // GCM IV stored alongside ciphertext
+  bankDetailsTag        String?      // GCM auth tag
+
+  // KYC state
+  status              VendorStatus  @default(PENDING_KYC)
+  isActive            Boolean       @default(false)  // true only when KYC_APPROVED
+  isIdentityVerified  Boolean       @default(false)
+
+  // Risk
+  fraudScore          Int           @default(0)       // 0–100
+  isFlaggedForReview  Boolean       @default(false)
+  blacklistReason     String?
+  suspendedReason     String?
+  suspendedAt         DateTime?
+
+  // Admin who last reviewed
+  reviewedBy          String?
+  reviewedAt          DateTime?
+  rejectionReason     String?
+
+  documents           KycDocument[]
+  auditLog            KycAuditLog[]
+  outboxEvents        VendorOutboxEvent[]
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([pan])
+  @@index([businessPan])
+  @@index([gstin])
+  @@index([status])
+  @@index([isActive])
+}
+
+// ─── KycDocument ───────────────────────────────────────────────────────────
+//
+// Stores metadata about uploaded documents.
+// The actual file lives on disk (or S3 in production).
+// storagePath is the server-side path — never returned to clients.
+
+model KycDocument {
+  id          String         @id @default(uuid())
+  vendorId    String
+  vendor      Vendor         @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  type        DocumentType
+  status      DocumentStatus @default(PENDING)
+
+  // File metadata — path is server-side only, never exposed via API
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  storagePath   String        // server-side path (not exposed to client)
+
+  // Admin review
+  reviewNote    String?
+  reviewedBy    String?
+  reviewedAt    DateTime?
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  // One active document per type per vendor
+  @@unique([vendorId, type])
+  @@index([vendorId])
+  @@index([status])
+}
+
+// ─── KycAuditLog ──────────────────────────────────────────────────────────
+//
+// Immutable audit trail of every KYC state transition.
+// Never deleted, never updated.
+
+model KycAuditLog {
+  id        String       @id @default(uuid())
+  vendorId  String
+  vendor    Vendor       @relation(fields: [vendorId], references: [id])
+
+  event     KycEventType
+  fromStatus VendorStatus?
+  toStatus   VendorStatus?
+
+  performedBy  String          // userId of admin or 'system' for automated events
+  reason       String?
+  metadata     Json?           // additional context (fraud score, flags, etc.)
+
+  createdAt DateTime           @default(now())
+
+  @@index([vendorId])
+  @@index([event])
+}
+
+// ─── VendorOutboxEvent ─────────────────────────────────────────────────────
+//
+// Transactional outbox — events written atomically with state changes,
+// relayed to RabbitMQ by background worker.
+
+model VendorOutboxEvent {
+  id          String   @id @default(uuid())
+  vendorId    String
+  vendor      Vendor   @relation(fields: [vendorId], references: [id])
+
+  eventType   String
+  payload     Json
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+
+  createdAt   DateTime @default(now())
+
+  @@index([published])
+  @@index([vendorId])
+}
+
+// ─── BlacklistedIdentifier ─────────────────────────────────────────────────
+//
+// Global blacklist for PAN / GSTIN / bank account numbers.
+// Checked during onboarding to catch bad actors trying new accounts.
+
+model BlacklistedIdentifier {
+  id         String   @id @default(uuid())
+  type       String   // PAN | GSTIN | BANK_ACCOUNT
+  value      String   // hashed with SHA-256 (never stored plaintext)
+  reason     String
+  addedBy    String   // admin userId
+  createdAt  DateTime @default(now())
+
+  @@unique([type, value])
+  @@index([type])
+}

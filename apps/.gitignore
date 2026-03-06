@@ -1,0 +1,16 @@
+node_modules
+.env
+.env.*
+dist
+build
+coverage
+npm-debug.log
+Dockerfile.local
+*.log
+
+# prisma
+prisma/dev.db
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// CORE DOMAIN MODELS
+// ==========================================
+
+model Stock {
+  sku      String @id // Using SKU as Primary Key for faster joins with other services
+  quantity Int    @default(0)
+  reserved Int    @default(0)
+  version  Int    @default(1) // 🛡️ Optimistic Locking version field
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  history StockHistory[]
+  locks   ReservationLock[]
+
+  @@index([sku])
+}
+
+model ReservationLock {
+  id        String   @id @default(uuid())
+  orderId   String
+  sku       String
+  quantity  Int
+  expiresAt DateTime
+
+  // 🧹 Status & Worker Tracing for Multi-Instance Safety
+  status              String    @default("ACTIVE") // ACTIVE, PROCESSING
+  processingStartedAt DateTime?
+  workerId            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stock Stock @relation(fields: [sku], references: [sku], onDelete: Cascade)
+
+  @@unique([orderId, sku])
+  // ⚡ Optimized for the TTL Sweeper Worker's "Claim" query
+  @@index([status, expiresAt, processingStartedAt])
+}
+
+model StockHistory {
+  id     String @id @default(uuid())
+  sku    String
+  change Int
+  reason String
+  source String // e.g., "order:uuid", "admin-panel", "system-sweeper"
+
+  // 📝 Perfect Audit Trail
+  quantityAfter Int
+  reservedAfter Int @default(0)
+
+  createdAt DateTime @default(now())
+  stock     Stock?   @relation(fields: [stockSku], references: [sku])
+  stockSku  String?
+}
+
+// ==========================================
+// INFRASTRUCTURE & RELIABILITY MODELS
+// ==========================================
+
+// 🛡️ Handles "At-Least-Once" Delivery from RabbitMQ (Idempotency)
+model ProcessedEvent {
+  id        String   @id // The eventId from the incoming message
+  createdAt DateTime @default(now())
+}
+
+// 📮 Transactional Outbox Pattern (Atomic DB + Event Publish)
+model OutboxEvent {
+  id      String @id @default(uuid())
+  type    String // e.g., 'inventory.reserved', 'inventory.deducted'
+  payload Json
+  status  String @default("PENDING") // PENDING, PROCESSING, PUBLISHED, FAILED
+
+  // 🚀 Crash Recovery & Worker Tracing
+  processingStartedAt DateTime?
+  workerId            String?
+
+  retryCount Int     @default(0)
+  lastError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ⚡ Optimized for the Outbox Relay Worker's "Claim" query
+  @@index([status, createdAt, processingStartedAt])
+}
+
+enum StockChangeType {
+  RESTOCK
+  SALE
+  ADJUSTMENT
+  RESERVE
+  RELEASE
+}

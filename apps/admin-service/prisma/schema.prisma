@@ -1,0 +1,274 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum AdminRole {
+  SUPER_ADMIN    // full access, can promote other admins
+  MODERATOR      // vendor + product moderation only
+  FINANCE_ADMIN  // payout overrides, financial reporting only
+  SUPPORT        // read-only + order overrides
+}
+
+enum AuditAction {
+  // Vendor moderation
+  VENDOR_REVIEW_STARTED
+  VENDOR_KYC_APPROVED
+  VENDOR_KYC_REJECTED
+  VENDOR_SUSPENDED
+  VENDOR_UNSUSPENDED
+  VENDOR_BLACKLISTED
+  VENDOR_DOCUMENT_APPROVED
+  VENDOR_DOCUMENT_REJECTED
+  IDENTIFIER_BLACKLISTED
+  IDENTIFIER_UNBLACKLISTED
+
+  // Product moderation
+  PRODUCT_SUSPENDED
+  PRODUCT_RESTORED
+  PRODUCT_ARCHIVED
+
+  // Order overrides
+  ORDER_FORCE_CANCELLED
+  ORDER_FORCE_REFUNDED
+  ORDER_STATUS_OVERRIDDEN
+
+  // Review moderation
+  REVIEW_REJECTED
+  REVIEW_RESTORED
+
+  // Case management
+  CASE_OPENED
+  CASE_ASSIGNED
+  CASE_RESOLVED
+  CASE_DISMISSED
+
+  // Admin management
+  ADMIN_CREATED
+  ADMIN_ROLE_CHANGED
+  ADMIN_DEACTIVATED
+}
+
+enum EntityType {
+  VENDOR
+  PRODUCT
+  ORDER
+  REVIEW
+  PAYOUT
+}
+
+enum CaseStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CaseCategory {
+  FRAUD_REPORT
+  POLICY_VIOLATION
+  COUNTERFEIT_LISTING
+  MISLEADING_DESCRIPTION
+  PROHIBITED_ITEM
+  PAYMENT_DISPUTE
+  REVIEW_MANIPULATION
+  VENDOR_COMPLAINT
+  OTHER
+}
+
+enum OrderOverrideType {
+  FORCE_CANCEL
+  FORCE_REFUND
+  STATUS_CORRECTION
+}
+
+// ─── Admin User ─────────────────────────────────────────────────────────────
+
+model AdminUser {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  email       String    @unique
+  name        String
+  role        AdminRole @default(MODERATOR)
+  isActive    Boolean   @default(true)
+
+  auditLogs     AuditLog[]
+  assignedCases ModerationCase[] @relation("AssignedAdmin")
+  openedCases   ModerationCase[] @relation("OpenedBy")
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([role])
+  @@index([isActive])
+}
+
+// ─── Central Audit Log ──────────────────────────────────────────────────────
+
+model AuditLog {
+  id           String      @id @default(uuid())
+  adminId      String
+  admin        AdminUser   @relation(fields: [adminId], references: [id])
+
+  action       AuditAction
+  entityType   EntityType
+  entityId     String
+
+  before       Json?
+  after        Json?
+  reason       String?
+  metadata     Json?
+
+  caseId       String?
+  requestId    String?
+
+  createdAt    DateTime    @default(now())
+
+  @@index([adminId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([caseId])
+  @@index([createdAt])
+}
+
+// ─── Moderation Case ────────────────────────────────────────────────────────
+
+model ModerationCase {
+  id           String       @id @default(uuid())
+  caseNumber   String       @unique
+
+  entityType   EntityType
+  entityId     String
+  entitySnapshot Json?
+
+  category     CaseCategory
+  priority     CasePriority @default(MEDIUM)
+  status       CaseStatus   @default(OPEN)
+
+  title        String
+  description  String       @db.Text
+
+  reportedBy   String?
+  reportedAt   DateTime     @default(now())
+
+  assignedToId String?
+  assignedTo   AdminUser?   @relation("AssignedAdmin", fields: [assignedToId], references: [id])
+
+  openedById   String
+  openedBy     AdminUser    @relation("OpenedBy", fields: [openedById], references: [id])
+
+  resolution   String?
+  resolvedAt   DateTime?
+
+  notes        CaseNote[]
+  outboxEvents AdminOutboxEvent[]
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([priority, status])
+  @@index([assignedToId])
+  @@index([createdAt])
+}
+
+// ─── Case Notes ─────────────────────────────────────────────────────────────
+
+model CaseNote {
+  id       String         @id @default(uuid())
+  caseId   String
+  case     ModerationCase @relation(fields: [caseId], references: [id])
+
+  authorId   String
+  body       String   @db.Text
+  isInternal Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@index([caseId])
+}
+
+// ─── Order Override ─────────────────────────────────────────────────────────
+
+model OrderOverride {
+  id          String            @id @default(uuid())
+  orderId     String
+  adminId     String
+  type        OrderOverrideType
+  fromStatus  String
+  toStatus    String
+  reason      String
+  caseId      String?
+
+  success         Boolean
+  serviceResponse Json?
+  failureReason   String?
+
+  createdAt   DateTime          @default(now())
+
+  @@index([orderId])
+  @@index([adminId])
+  @@index([type])
+}
+
+// ─── Outbox Events ──────────────────────────────────────────────────────────
+
+model AdminOutboxEvent {
+  id          String          @id @default(uuid())
+  caseId      String?
+  case        ModerationCase? @relation(fields: [caseId], references: [id])
+
+  eventType   String
+  payload     Json
+  published   Boolean         @default(false)
+  publishedAt DateTime?
+
+  createdAt   DateTime        @default(now())
+
+  @@index([published])
+  @@index([caseId])
+  @@index([publishedAt]) // used by the outbox sweeper (Issue 2 fix)
+}
+
+// ─── Processed Messages ─────────────────────────────────────────────────────
+// Idempotency table for RabbitMQ consumers. (Issue 1 fix)
+//
+// RabbitMQ guarantees at-least-once delivery. If a network partition occurs
+// after a message is fully processed but before the ack reaches the broker,
+// RabbitMQ redelivers the message. Without this table, a redelivered
+// ORDER_FORCE_REFUNDED or VENDOR_BLACKLISTED event would be processed twice.
+//
+// Each consumer inserts the messageId before doing any work (using upsert
+// with skipDuplicates). If the row already exists the insert is a no-op and
+// the consumer skips processing. The unique constraint on messageId is the
+// atomic gate that prevents double processing.
+//
+// TTL: rows older than MESSAGE_ID_RETENTION_DAYS are removed by a cron job
+// (same sweeper that cleans the outbox). Default retention: 30 days.
+
+model ProcessedMessage {
+  id          String   @id @default(uuid())
+  // Unique identifier from the RabbitMQ message properties (correlationId or
+  // messageId). Consumer code must set this when publishing or extract it from
+  // the message properties.
+  messageId   String   @unique
+  queue       String   // which consumer processed it (for observability)
+  processedAt DateTime @default(now())
+
+  @@index([processedAt]) // used by the sweeper to purge old rows
+}
